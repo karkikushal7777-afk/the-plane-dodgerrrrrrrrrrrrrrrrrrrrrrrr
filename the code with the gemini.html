@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>Sky Dodger: Ultra High-Res</title>
+
+    <style>
+
+        body { margin: 0; overflow: hidden; background: #001d3d; font-family: 'Segoe UI', sans-serif; }
+
+        canvas { display: block; }
+
+        #hud {
+
+            position: fixed; top: 20px; left: 20px; color: #fff;
+
+            font-size: 24px; font-weight: 900; pointer-events: none; z-index: 5;
+
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.8);
+
+        }
+
+        #menu {
+
+            position: fixed; inset: 0; background: radial-gradient(circle, rgba(0,20,40,0.9) 0%, rgba(0,5,10,1) 100%);
+
+            display: flex; align-items: center; justify-content: center; z-index: 10;
+
+        }
+
+        .container {
+
+            background: #ffffff; padding: 40px; border-radius: 30px;
+
+            text-align: center; border: 6px solid #4cc9f0; width: 450px;
+
+            box-shadow: 0 0 50px rgba(76, 201, 240, 0.3);
+
+        }
+
+        .btn {
+
+            padding: 12px 24px; margin: 8px; cursor: pointer; border: 3px solid #4cc9f0;
+
+            background: transparent; color: #4cc9f0; border-radius: 12px; font-weight: 800;
+
+            transition: 0.2s;
+
+        }
+
+        .btn.active { background: #4cc9f0; color: white; }
+
+        .hangar { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin: 25px 0; }
+
+        .slot { border: 2px solid #ddd; padding: 15px; cursor: pointer; border-radius: 15px; font-size: 14px; }
+
+        .slot.selected { border-color: #ffd60a; background: #fffceb; transform: scale(1.05); }
+
+        .start-btn {
+
+            background: #ff4d6d; color: white; border: none; padding: 20px 70px;
+
+            font-size: 28px; font-weight: 900; border-radius: 60px; cursor: pointer;
+
+            box-shadow: 0 10px 20px rgba(255, 77, 109, 0.4);
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+
+
+<div id="hud">
+
+    COINS: <span id="cTxt">0</span> | SCORE: <span id="sTxt">0</span>
+
+</div>
+
+
+
+<div id="menu">
+
+    <div class="container">
+
+        <h1 style="color: #0077be; margin: 0; font-size: 42px; letter-spacing: 2px;">SKY DODGER</h1>
+
+        <p style="font-size: 18px;">BANK: <span id="bTxt" style="color:#f39c12; font-weight:bold;">0</span></p>
+
+        
+
+        <div class="mode-select">
+
+            <button id="eBtn" class="btn active" onclick="setMode('easy')">EASY</button>
+
+            <button id="hBtn" class="btn" onclick="setMode('hard')">HARD</button>
+
+        </div>
+
+
+
+        <div class="hangar" id="hangarUI"></div>
+
+        
+
+        <button class="start-btn" onclick="startGame()">SCRAMBLE</button>
+
+    </div>
+
+</div>
+
+
+
+<canvas id="gCvs"></canvas>
+
+
+
+<script>
+
+const cvs = document.getElementById("gCvs");
+
+const ctx = cvs.getContext("2d");
+
+
+
+// --- AUDIO ENGINE ---
+
+let aCtx;
+
+function sfx(f, t, d, v) {
+
+    if(!aCtx) aCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const o = aCtx.createOscillator(), g = aCtx.createGain();
+
+    o.type = t; o.frequency.setValueAtTime(f, aCtx.currentTime);
+
+    o.connect(g); g.connect(aCtx.destination);
+
+    g.gain.setValueAtTime(v, aCtx.currentTime);
+
+    g.gain.exponentialRampToValueAtTime(0.01, aCtx.currentTime + d);
+
+    o.start(); o.stop(aCtx.currentTime + d);
+
+}
+
+
+
+// --- DATA ---
+
+let mode = 'easy', coins = parseInt(localStorage.getItem('sd_c')) || 0;
+
+let unlocked = JSON.parse(localStorage.getItem('sd_u')) || ['Classic'];
+
+let activeShip = localStorage.getItem('sd_a') || 'Classic';
+
+
+
+const SHIPS = {
+
+    'Classic': { color: '#ffffff', accent: '#e63946', trail: '#fff', speed: 0.65, turn: 0.12, price: 0 },
+
+    'Viper':   { color: '#ffd60a', accent: '#333333', trail: '#ffd60a', speed: 0.85, turn: 0.16, price: 150 },
+
+    'Falcon':  { color: '#4cc9f0', accent: '#0077be', trail: '#4cc9f0', speed: 0.75, turn: 0.22, price: 300 }
+
+};
+
+
+
+let isRunning = false, score = 0, frame = 0, shake = 0, camX = 0, camY = 0;
+
+let keys = {};
+
+const p = { x: 0, y: 0, vx: 0, vy: 0, angle: 0 };
+
+let missiles = [], loot = [], clouds = [], particles = [];
+
+
+
+function setMode(m) {
+
+    mode = m;
+
+    document.getElementById('eBtn').className = m === 'easy' ? 'btn active' : 'btn';
+
+    document.getElementById('hBtn').className = m === 'hard' ? 'btn active' : 'btn';
+
+}
+
+
+
+function updateHangar() {
+
+    const ui = document.getElementById('hangarUI'); ui.innerHTML = '';
+
+    for (let s in SHIPS) {
+
+        let own = unlocked.includes(s);
+
+        let div = document.createElement('div');
+
+        div.className = `slot ${activeShip === s ? 'selected' : ''}`;
+
+        div.innerHTML = `<b>${s}</b><br>${own ? 'READY' : SHIPS[s].price + ' C'}`;
+
+        div.onclick = () => {
+
+            if(own) { activeShip = s; } 
+
+            else if(coins >= SHIPS[s].price) {
+
+                coins -= SHIPS[s].price; unlocked.push(s); activeShip = s;
+
+                save();
+
+            }
+
+            updateHangar(); sync();
+
+        };
+
+        ui.appendChild(div);
+
+    }
+
+}
+
+
+
+function save() {
+
+    localStorage.setItem('sd_c', coins);
+
+    localStorage.setItem('sd_u', JSON.stringify(unlocked));
+
+    localStorage.setItem('sd_a', activeShip);
+
+}
+
+
+
+function sync() {
+
+    document.getElementById('cTxt').innerText = coins;
+
+    document.getElementById('sTxt').innerText = score;
+
+    document.getElementById('bTxt').innerText = coins;
+
+}
+
+
+
+function explode(x, y, power = 1) {
+
+    sfx(100 / power, 'sawtooth', 0.5 * power, 0.4);
+
+    shake = 35 * power;
+
+    const colors = ['#ff4500', '#ffcc00', '#ffffff', '#555'];
+
+    for(let i=0; i < 60 * power; i++) {
+
+        particles.push({
+
+            x, y,
+
+            vx: (Math.random()-0.5) * (25 * power),
+
+            vy: (Math.random()-0.5) * (25 * power),
+
+            life: 1.0,
+
+            size: (Math.random()*10 + 5) * power,
+
+            color: colors[Math.floor(Math.random()*colors.length)]
+
+        });
+
+    }
+
+}
+
+
+
+function startGame() {
+
+    isRunning = true; score = 0; frame = 0;
+
+    missiles = []; loot = []; particles = [];
+
+    p.x = 0; p.y = 0; p.vx = 0; p.vy = 0;
+
+    document.getElementById('menu').style.display = 'none';
+
+    clouds = [];
+
+    for(let i=0; i<40; i++) clouds.push({ x: Math.random()*6000-3000, y: Math.random()*6000-3000, size: 80+Math.random()*120 });
+
+    requestAnimationFrame(loop);
+
+}
+
+
+
+function loop() {
+
+    if (!isRunning) return;
+
+    frame++;
+
+
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    ctx.fillStyle = "#87ceeb";
+
+    ctx.fillRect(0, 0, cvs.width, cvs.height);
+
+
+
+    if (shake > 0) { ctx.translate((Math.random()-0.5)*shake, (Math.random()-0.5)*shake); shake *= 0.9; }
+
+
+
+    ctx.translate(cvs.width/2, cvs.height/2);
+
+    ctx.scale(0.6, 0.6); // Wide Vision
+
+    ctx.translate(-camX, -camY);
+
+
+
+    // Background Clouds
+
+    ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+
+    clouds.forEach(c => { ctx.beginPath(); ctx.arc(c.x, c.y, c.size, 0, 7); ctx.fill(); });
+
+
+
+    // Player Physics
+
+    const s = SHIPS[activeShip];
+
+    if (keys['w'] || keys['arrowup']) p.vy -= s.speed;
+
+    if (keys['s'] || keys['arrowdown']) p.vy += s.speed;
+
+    if (keys['a'] || keys['arrowleft']) p.vx -= s.speed;
+
+    if (keys['d'] || keys['arrowright']) p.vx += s.speed;
+
+    p.vx *= 0.96; p.vy *= 0.96;
+
+    p.x += p.vx; p.y += p.vy;
+
+    if (Math.hypot(p.vx, p.vy) > 0.2) {
+
+        let target = Math.atan2(p.vy, p.vx);
+
+        let diff = target - p.angle;
+
+        while(diff < -Math.PI) diff += Math.PI*2;
+
+        while(diff > Math.PI) diff -= Math.PI*2;
+
+        p.angle += diff * s.turn;
+
+    }
+
+    camX += (p.x - camX) * 0.1; camY += (p.y - camY) * 0.1;
+
+
+
+    // Coins
+
+    if (frame % 110 === 0) loot.push({ x: p.x + (Math.random()-0.5)*3500, y: p.y + (Math.random()-0.5)*3500 });
+
+    for (let i = loot.length-1; i >= 0; i--) {
+
+        let l = loot[i];
+
+        ctx.fillStyle = "#ffd60a"; ctx.shadowBlur = 15; ctx.shadowColor = "#fff";
+
+        ctx.beginPath(); ctx.arc(l.x, l.y, 22, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+
+        if (Math.hypot(p.x-l.x, p.y-l.y) < 65) {
+
+            coins += 10; score += 50; sfx(880, 'sine', 0.1, 0.2); loot.splice(i, 1); sync(); save();
+
+        }
+
+    }
+
+
+
+    // Missiles
+
+    let spawn = mode === 'easy' ? 80 : 50;
+
+    if (frame % spawn === 0) {
+
+        let a = Math.random()*6.28;
+
+        missiles.push({ x: p.x+Math.cos(a)*1300, y: p.y+Math.sin(a)*1300, ang: a+Math.PI, speed: 10.5 });
+
+    }
+
+
+
+    for (let i = missiles.length-1; i >= 0; i--) {
+
+        let m = missiles[i];
+
+        let target = Math.atan2(p.y - m.y, p.x - m.x);
+
+        let diff = target - m.ang;
+
+        while(diff < -Math.PI) diff += Math.PI*2;
+
+        while(diff > Math.PI) diff -= Math.PI*2;
+
+        m.ang += diff * 0.048;
+
+        m.x += Math.cos(m.ang) * m.speed; m.y += Math.sin(m.ang) * m.speed;
+
+
+
+        // Restore Missile Fire Texture
+
+        ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(m.ang);
+
+        // Fire Glow
+
+        ctx.fillStyle = "rgba(255, 69, 0, 0.7)";
+
+        ctx.beginPath(); ctx.arc(-28, 0, 15+Math.random()*8, 0, 7); ctx.fill();
+
+        // Body
+
+        let grad = ctx.createLinearGradient(0, -10, 0, 10);
+
+        grad.addColorStop(0, "#555"); grad.addColorStop(1, "#222");
+
+        ctx.fillStyle = grad; ctx.fillRect(-25, -10, 50, 20);
+
+        ctx.fillStyle = "#ff4d6d"; ctx.beginPath(); ctx.moveTo(25, -10); ctx.lineTo(48, 0); ctx.lineTo(25, 10); ctx.fill();
+
+        ctx.restore();
+
+
+
+        // Player Collision
+
+        if (Math.hypot(p.x-m.x, p.y-m.y) < 40) { explode(p.x, p.y, 1.5); isRunning = false; }
+
+
+
+        // Missile-Missile Collision (Restored High-Intensity Particles)
+
+        let hit = false;
+
+        for (let j = i-1; j >= 0; j--) {
+
+            if (Math.hypot(m.x - missiles[j].x, m.y - missiles[j].y) < 60) {
+
+                explode(m.x, m.y, 1.2); // Massive particles here
+
+                missiles.splice(i, 1); missiles.splice(j, 1);
+
+                score += 250; sync(); hit = true; break;
+
+            }
+
+        }
+
+        if (hit) continue;
+
+        if (Math.hypot(p.x-m.x, p.y-m.y) > 4000) missiles.splice(i, 1);
+
+    }
+
+
+
+    // Particles Render
+
+    for (let i = particles.length-1; i >= 0; i--) {
+
+        let part = particles[i]; part.x += part.vx; part.y += part.vy; part.life -= 0.015;
+
+        ctx.globalAlpha = part.life; ctx.fillStyle = part.color;
+
+        ctx.beginPath(); ctx.arc(part.x, part.y, part.size * part.life, 0, 7); ctx.fill();
+
+        if (part.life <= 0) particles.splice(i, 1);
+
+    }
+
+    ctx.globalAlpha = 1;
+
+
+
+    // Restore Plane Fire/Trail Texture
+
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle);
+
+    // Engine Flare
+
+    ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+
+    ctx.beginPath(); ctx.arc(-22, 0, 12+Math.random()*6, 0, 7); ctx.fill();
+
+    // Plane Body
+
+    ctx.fillStyle = s.accent; ctx.beginPath(); ctx.moveTo(-20, -25); ctx.lineTo(15, 0); ctx.lineTo(-20, 25); ctx.fill();
+
+    ctx.fillStyle = s.color; ctx.beginPath(); ctx.ellipse(0, 0, 28, 10, 0, 0, 7); ctx.fill();
+
+    ctx.restore();
+
+
+
+    if (!isRunning) { 
+
+        setTimeout(() => { document.getElementById('menu').style.display = 'flex'; sync(); }, 1500); 
+
+    } else { 
+
+        requestAnimationFrame(loop); 
+
+    }
+
+}
+
+
+
+window.onkeydown = e => keys[e.key.toLowerCase()] = true;
+
+window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+
+window.onresize = () => { cvs.width = innerWidth; cvs.height = innerHeight; };
+
+window.onresize(); updateHangar(); sync();
+
+</script>
+
+</body>
+
+</html>
